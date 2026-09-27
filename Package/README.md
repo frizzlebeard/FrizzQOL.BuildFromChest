@@ -18,6 +18,10 @@ The pull happens on the hammer click. If that click does not place the piece, th
 
 Install this on every player. If you use a dedicated server, install it there too.
 
+## Source
+
+https://github.com/frizzlebeard/FrizzQOL.BuildFromChest
+
 ## Install
 
 Install with r2modman or the Thunderstore Mod Manager.

@@ -47,16 +47,10 @@ The plugin file is `FrizzQOL.BuildFromChest.dll`, under the project `bin\Release
 
 `Environment.props` stays on your machine. It is listed in `.gitignore`.
 
-## Publishing
+## Source
 
-This folder is ready to push as its own public repository. Create an empty GitHub repo named `FrizzQOL.BuildFromChest`. Do not add a README, license, or gitignore on GitHub. Those files are already here. Then run:
+https://github.com/frizzlebeard/FrizzQOL.BuildFromChest
 
-```
-git remote add origin https://github.com/<you>/FrizzQOL.BuildFromChest.git
-git push -u origin main
-```
-
-Set `website_url` in `Package/manifest.json` to that repository before the Thunderstore upload.
 
 ## Thunderstore package
 
