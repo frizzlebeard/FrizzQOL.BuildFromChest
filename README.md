@@ -1,10 +1,20 @@
 # FrizzQOL Build From Chest
 
-Hammer placement spends wood and stone from your inventory first. Anything still missing comes from the nearest chest you can open. A closer chest owned by someone else is skipped.
+https://github.com/frizzlebeard/FrizzQOL.BuildFromChest
 
-Only wood and stone are pulled, and only for the vanilla hammer. Fine wood and other materials stay where they are. One chest is used per placement. If that chest is short, nothing is taken from it.
+> The hammer spends the materials in your inventory first, then pulls the rest from chests you can open. 📦
 
-The pull happens on the hammer click. If that click does not place the piece, the items go back to the same chest. Chests are not searched while the build menu is open.
+---
+
+## What it does
+
+Place a piece with the vanilla hammer. Materials in your inventory are used first. Anything still missing comes from nearby chests.
+
+- A closer chest you cannot open is skipped.
+- Every material on the piece can be pulled, including fine wood, metal, and trophies.
+- Chests in range are used nearest first. If they still cannot cover the cost, nothing is taken.
+- The pull happens on the hammer click. If that click does not place the piece, the items go back to the same chests.
+- Chests are left alone while the build menu is open.
 
 ## Config
 
@@ -29,6 +39,12 @@ To install by hand, copy `FrizzQOL.BuildFromChest.dll` into `BepInEx/plugins`.
 - Valheim
 - [BepInExPack for Valheim](https://thunderstore.io/c/valheim/p/denikson/BepInExPack_Valheim/)
 
+## Support
+
+☕ If you enjoy my work, please buy me a coffee.
+
+Cash App: `$FrizzleFry4`
+
 ## License
 
 [MIT](LICENSE). You can use, copy, change, and share this mod. Keep the copyright notice with any copy.
@@ -46,7 +62,3 @@ dotnet build BuildFromChest.sln -c Release
 The plugin file is `FrizzQOL.BuildFromChest.dll`, under the project `bin\Release\net48` folder.
 
 `Environment.props` stays on your machine. It is listed in `.gitignore`.
-
-## Source
-
-https://github.com/frizzlebeard/FrizzQOL.BuildFromChest

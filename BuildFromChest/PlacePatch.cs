@@ -10,21 +10,20 @@ namespace BuildFromChest
     internal static class PlacePatch
     {
         private static readonly MethodInfo CheckAccessMethod = AccessTools.Method(typeof(Container), "CheckAccess");
+        private static readonly MethodInfo LoadMethod = AccessTools.Method(typeof(Container), "Load", System.Type.EmptyTypes);
         private static readonly MethodInfo SaveMethod = AccessTools.Method(typeof(Container), "Save");
         private static readonly FieldInfo NViewField = AccessTools.Field(typeof(Container), "m_nview");
 
         private static bool _busy;
         private static bool _loggedAccess;
         private static bool _loggedSave;
-        private static Container _chest;
-        private static int _wood;
-        private static int _stone;
+        private static readonly List<HeldTake> Held = new List<HeldTake>();
 
         private static void Prefix(Player __instance, Piece piece)
         {
             // UpdatePlacement already pulled on this click. Putting the items back here
             // would fail the place that HaveRequirements just allowed.
-            if (_busy || _chest != null)
+            if (_busy || Held.Count > 0)
             {
                 return;
             }
@@ -34,7 +33,7 @@ namespace BuildFromChest
 
         internal static void Prepare(Player player, Piece piece)
         {
-            if (_busy || _chest != null)
+            if (_busy || Held.Count > 0)
             {
                 return;
             }
@@ -63,9 +62,8 @@ namespace BuildFromChest
                 return;
             }
 
-            int costWood = 0;
-            int costStone = 0;
-            SumCosts(piece.m_resources, ref costWood, ref costStone);
+            var costs = new List<ItemAmount>();
+            SumCosts(piece.m_resources, costs);
 
             Inventory inventory = player.GetInventory();
             if (inventory == null)
@@ -73,16 +71,18 @@ namespace BuildFromChest
                 return;
             }
 
-            int missingWood = ChestPay.Missing(costWood, inventory.CountItems(ChestPay.Wood, -1, true));
-            int missingStone = ChestPay.Missing(costStone, inventory.CountItems(ChestPay.Stone, -1, true));
-            if (!ChestPay.NeedsPull(missingWood, missingStone))
+            List<ItemAmount> missing = ChestPay.MissingItems(costs, CountHave(inventory, costs));
+            if (!ChestPay.NeedsPull(missing))
             {
                 return;
             }
 
             float radius = Plugin.CurrentRadius();
-            Container chosen = FindChest(player, radius, out int chestWood, out int chestStone);
-            if (chosen == null || !ChestPay.CanCover(chestWood, chestStone, missingWood, missingStone))
+            var chests = new List<ChestCandidate>();
+            var byId = new Dictionary<int, Container>();
+            FindChests(player, radius, missing, chests, byId);
+            List<PlannedTake> plan = ChestPay.PlanPulls(chests, missing, radius);
+            if (plan == null || plan.Count == 0)
             {
                 return;
             }
@@ -90,45 +90,24 @@ namespace BuildFromChest
             _busy = true;
             try
             {
-                if (!MoveToPlayer(chosen, inventory, missingWood, missingStone))
-                {
-                    return;
-                }
-
-                _chest = chosen;
-                _wood = missingWood;
-                _stone = missingStone;
+                ApplyPlan(inventory, plan, byId);
             }
             catch (System.Exception ex)
             {
-                _chest = null;
-                _wood = 0;
-                _stone = 0;
+                ReturnHeld(player);
                 Plugin.LogWarning("Chest pull failed: " + ex.Message);
             }
             finally
             {
                 _busy = false;
+                byId.Clear();
             }
         }
 
         // HaveRequirements failed, or TryPlacePiece never ran. A successful place already cleared this.
         internal static void Finish(Player player)
         {
-            if (_chest == null)
-            {
-                _busy = false;
-                return;
-            }
-
-            Container chest = _chest;
-            int wood = _wood;
-            int stone = _stone;
-            _chest = null;
-            _wood = 0;
-            _stone = 0;
-            _busy = false;
-            ReturnToChest(player, chest, wood, stone);
+            ReturnHeld(player);
         }
 
         private static bool IsFreeBuild(Piece piece)
@@ -146,21 +125,13 @@ namespace BuildFromChest
         {
             try
             {
-                if (_chest == null)
+                if (__result)
                 {
+                    Held.Clear();
                     return;
                 }
 
-                Container chest = _chest;
-                int wood = _wood;
-                int stone = _stone;
-                _chest = null;
-                _wood = 0;
-                _stone = 0;
-                if (!__result)
-                {
-                    ReturnToChest(__instance, chest, wood, stone);
-                }
+                ReturnHeld(__instance);
             }
             finally
             {
@@ -168,7 +139,7 @@ namespace BuildFromChest
             }
         }
 
-        private static void SumCosts(Piece.Requirement[] requirements, ref int wood, ref int stone)
+        private static void SumCosts(Piece.Requirement[] requirements, List<ItemAmount> costs)
         {
             if (requirements == null)
             {
@@ -183,31 +154,49 @@ namespace BuildFromChest
                     continue;
                 }
 
-                ChestPay.AddCost(requirement.m_resItem.m_itemData.m_shared.m_name, requirement.m_amount, ref wood, ref stone);
+                if (requirement.m_amount <= 0 || requirement.m_resItem.gameObject == null)
+                {
+                    continue;
+                }
+
+                string sharedName = requirement.m_resItem.m_itemData.m_shared.m_name;
+                string prefabName = ChestPay.PrefabKey(requirement.m_resItem.gameObject.name);
+                ChestPay.AddCost(costs, sharedName, prefabName, requirement.m_amount);
             }
         }
 
-        private static Collider[] _hits = new Collider[256];
-        private static readonly List<ChestCandidate> Candidates = new List<ChestCandidate>();
-        private static readonly Dictionary<int, Container> ById = new Dictionary<int, Container>();
-
-        private static Container FindChest(Player player, float radius, out int wood, out int stone)
+        private static Dictionary<string, int> CountHave(Inventory inventory, List<ItemAmount> costs)
         {
-            wood = 0;
-            stone = 0;
+            var have = new Dictionary<string, int>();
+            for (int i = 0; i < costs.Count; i++)
+            {
+                string sharedName = costs[i].SharedName;
+                if (have.ContainsKey(sharedName))
+                {
+                    continue;
+                }
+
+                have[sharedName] = inventory.CountItems(sharedName, -1, true);
+            }
+
+            return have;
+        }
+
+        private static void FindChests(Player player, float radius, List<ItemAmount> missing, List<ChestCandidate> chests, Dictionary<int, Container> byId)
+        {
             if (radius <= 0f)
             {
-                return null;
+                return;
             }
 
             Vector3 origin = player.transform.position;
-            int count = Overlap(origin, radius + 2f);
-            Candidates.Clear();
-            ById.Clear();
-            for (int i = 0; i < count; i++)
+            // Local on purpose. A reused buffer kept destroyed colliders alive and, once it
+            // filled, stopped seeing chests in a built-up area.
+            Collider[] hits = Physics.OverlapSphere(origin, radius + 2f, Physics.AllLayers, QueryTriggerInteraction.Collide);
+            for (int i = 0; i < hits.Length; i++)
             {
-                Collider hit = _hits[i];
-                _hits[i] = null;
+                Collider hit = hits[i];
+                hits[i] = null;
                 if (hit == null)
                 {
                     continue;
@@ -220,7 +209,7 @@ namespace BuildFromChest
                 }
 
                 int id = container.GetInstanceID();
-                if (ById.ContainsKey(id))
+                if (byId.ContainsKey(id))
                 {
                     continue;
                 }
@@ -231,139 +220,165 @@ namespace BuildFromChest
                     continue;
                 }
 
-                Inventory inventory = container.GetInventory();
-                bool canOpen = inventory != null && CanOpen(container, player);
-                var candidate = new ChestCandidate
+                bool canOpen = CanOpen(container, player);
+                Inventory inventory = canOpen ? container.GetInventory() : null;
+                if (canOpen && inventory != null)
+                {
+                    RefreshChest(container);
+                    inventory = container.GetInventory();
+                }
+
+                var counts = new Dictionary<string, int>();
+                if (inventory != null)
+                {
+                    for (int n = 0; n < missing.Count; n++)
+                    {
+                        string sharedName = missing[n].SharedName;
+                        if (counts.ContainsKey(sharedName))
+                        {
+                            continue;
+                        }
+
+                        counts[sharedName] = inventory.CountItems(sharedName, -1, true);
+                    }
+                }
+
+                chests.Add(new ChestCandidate
                 {
                     Id = id,
                     Distance = Vector3.Distance(origin, container.transform.position),
-                    CanOpen = canOpen,
-                    WoodCount = canOpen ? inventory.CountItems(ChestPay.Wood, -1, true) : 0,
-                    StoneCount = canOpen ? inventory.CountItems(ChestPay.Stone, -1, true) : 0
-                };
-                Candidates.Add(candidate);
-                ById[id] = container;
+                    CanOpen = canOpen && inventory != null,
+                    Counts = counts
+                });
+                byId[id] = container;
             }
-
-            int? picked = ChestPay.PickNearest(Candidates, radius);
-            if (picked == null || !ById.TryGetValue(picked.Value, out Container chosen))
-            {
-                return null;
-            }
-
-            for (int i = 0; i < Candidates.Count; i++)
-            {
-                if (Candidates[i].Id == picked.Value)
-                {
-                    wood = Candidates[i].WoodCount;
-                    stone = Candidates[i].StoneCount;
-                    break;
-                }
-            }
-
-            return chosen;
         }
 
-        private static int Overlap(Vector3 origin, float radius)
+        private static void ApplyPlan(Inventory playerInventory, List<PlannedTake> plan, Dictionary<int, Container> chests)
         {
-            int count = Physics.OverlapSphereNonAlloc(origin, radius, _hits, Physics.AllLayers, QueryTriggerInteraction.Collide);
-            while (count == _hits.Length && _hits.Length < 4096)
-            {
-                _hits = new Collider[_hits.Length * 2];
-                count = Physics.OverlapSphereNonAlloc(origin, radius, _hits, Physics.AllLayers, QueryTriggerInteraction.Collide);
-            }
-
-            return count;
-        }
-
-        private static bool MoveToPlayer(Container chest, Inventory playerInventory, int missingWood, int missingStone)
-        {
-            Inventory chestInventory = chest.GetInventory();
-            if (chestInventory == null)
-            {
-                return false;
-            }
-
-            int gotWood = 0;
-            int gotStone = 0;
-            int putWood = 0;
-            int putStone = 0;
+            var moved = new List<HeldTake>();
+            HeldTake current = null;
+            int currentId = 0;
             try
             {
-                gotWood = Take(chestInventory, ChestPay.Wood, missingWood);
-                if (gotWood != missingWood)
+                for (int i = 0; i < plan.Count; i++)
                 {
-                    UndoPull(chest, chestInventory, playerInventory, gotWood, gotStone, putWood, putStone);
-                    return false;
+                    PlannedTake take = plan[i];
+                    if (take == null || take.Amount <= 0)
+                    {
+                        continue;
+                    }
+
+                    if (current == null || take.ChestId != currentId)
+                    {
+                        if (current != null)
+                        {
+                            SaveChest(current.Chest);
+                            moved.Add(current);
+                        }
+
+                        if (!chests.TryGetValue(take.ChestId, out Container next) || next == null || next.GetInventory() == null)
+                        {
+                            UndoMoved(playerInventory, moved);
+                            return;
+                        }
+
+                        current = new HeldTake { Chest = next };
+                        currentId = take.ChestId;
+                    }
+
+                    Inventory chestInventory = current.Chest.GetInventory();
+                    int got = Take(chestInventory, take.SharedName, take.Amount);
+                    int put = got == take.Amount ? Give(playerInventory, take.PrefabName, take.SharedName, take.Amount) : 0;
+                    current.Items.Add(new MovedStack
+                    {
+                        SharedName = take.SharedName,
+                        PrefabName = take.PrefabName,
+                        TakenFromChest = got,
+                        GivenToPlayer = put
+                    });
+                    if (got != take.Amount || put != take.Amount)
+                    {
+                        SaveChest(current.Chest);
+                        moved.Add(current);
+                        current = null;
+                        UndoMoved(playerInventory, moved);
+                        return;
+                    }
                 }
 
-                gotStone = Take(chestInventory, ChestPay.Stone, missingStone);
-                if (gotStone != missingStone)
+                if (current != null)
                 {
-                    UndoPull(chest, chestInventory, playerInventory, gotWood, gotStone, putWood, putStone);
-                    return false;
+                    SaveChest(current.Chest);
+                    moved.Add(current);
                 }
 
-                putWood = Give(playerInventory, ChestPay.WoodPrefab, ChestPay.Wood, missingWood);
-                putStone = Give(playerInventory, ChestPay.StonePrefab, ChestPay.Stone, missingStone);
-                if (putWood != missingWood || putStone != missingStone)
-                {
-                    UndoPull(chest, chestInventory, playerInventory, gotWood, gotStone, putWood, putStone);
-                    return false;
-                }
-
-                SaveChest(chest);
-                return true;
+                Held.AddRange(moved);
             }
             catch (System.Exception ex)
             {
+                if (current != null && !moved.Contains(current))
+                {
+                    moved.Add(current);
+                }
+
+                UndoMoved(playerInventory, moved);
+                Held.Clear();
                 Plugin.LogWarning("Chest pull failed, restoring items: " + ex.Message);
-                UndoPull(chest, chestInventory, playerInventory, gotWood, gotStone, putWood, putStone);
-                return false;
             }
         }
 
-        // Items taken from the chest but never added to the player are returned too,
-        // so only the amounts measured back out of the player count as player items.
-        private static void UndoPull(Container chest, Inventory chestInventory, Inventory playerInventory, int gotWood, int gotStone, int putWood, int putStone)
+        private static void ReturnHeld(Player player)
         {
-            int backWood = Take(playerInventory, ChestPay.Wood, putWood);
-            int backStone = Take(playerInventory, ChestPay.Stone, putStone);
-            Give(chestInventory, ChestPay.WoodPrefab, ChestPay.Wood, gotWood - putWood + backWood);
-            Give(chestInventory, ChestPay.StonePrefab, ChestPay.Stone, gotStone - putStone + backStone);
-            SaveChest(chest);
-        }
-
-        private static void ReturnToChest(Player player, Container chest, int wood, int stone)
-        {
-            if (player == null || chest == null || chest.GetInventory() == null || player.GetInventory() == null)
+            if (Held.Count == 0)
             {
-                Plugin.LogWarning("Could not return pulled wood and stone.");
+                _busy = false;
                 return;
             }
 
-            Inventory playerInventory = player.GetInventory();
-            Inventory chestInventory = chest.GetInventory();
-            int backWood = Take(playerInventory, ChestPay.Wood, wood);
-            int backStone = Take(playerInventory, ChestPay.Stone, stone);
-            int storedWood = Give(chestInventory, ChestPay.WoodPrefab, ChestPay.Wood, backWood);
-            int storedStone = Give(chestInventory, ChestPay.StonePrefab, ChestPay.Stone, backStone);
-            int leftWood = backWood - storedWood;
-            int leftStone = backStone - storedStone;
-            if (leftWood > 0)
+            var copy = new List<HeldTake>(Held);
+            Held.Clear();
+            _busy = false;
+            if (player == null || player.GetInventory() == null)
             {
-                Give(playerInventory, ChestPay.WoodPrefab, ChestPay.Wood, leftWood);
+                Plugin.LogWarning("Could not return pulled materials.");
+                return;
             }
 
-            if (leftStone > 0)
-            {
-                Give(playerInventory, ChestPay.StonePrefab, ChestPay.Stone, leftStone);
-            }
+            UndoMoved(player.GetInventory(), copy);
+        }
 
-            SaveChest(chest);
-            if (backWood != wood || backStone != stone || leftWood > 0 || leftStone > 0)
+        private static void UndoMoved(Inventory playerInventory, List<HeldTake> moved)
+        {
+            for (int i = 0; i < moved.Count; i++)
             {
-                Plugin.LogWarning("Pulled wood or stone could not all return to the chest.");
+                HeldTake held = moved[i];
+                if (held == null || held.Chest == null || held.Chest.GetInventory() == null || playerInventory == null)
+                {
+                    Plugin.LogWarning("Could not return pulled materials.");
+                    continue;
+                }
+
+                Inventory chestInventory = held.Chest.GetInventory();
+                for (int n = 0; n < held.Items.Count; n++)
+                {
+                    MovedStack stack = held.Items[n];
+                    int back = Take(playerInventory, stack.SharedName, stack.GivenToPlayer);
+                    int returning = stack.TakenFromChest - stack.GivenToPlayer + back;
+                    int stored = Give(chestInventory, stack.PrefabName, stack.SharedName, returning);
+                    int left = returning - stored;
+                    if (left > 0)
+                    {
+                        Give(playerInventory, stack.PrefabName, stack.SharedName, left);
+                    }
+
+                    if (back != stack.GivenToPlayer || left > 0)
+                    {
+                        Plugin.LogWarning("Pulled materials could not all return to the chest.");
+                    }
+                }
+
+                SaveChest(held.Chest);
             }
         }
 
@@ -416,6 +431,14 @@ namespace BuildFromChest
             return false;
         }
 
+        private static void RefreshChest(Container container)
+        {
+            if (container != null && LoadMethod != null)
+            {
+                LoadMethod.Invoke(container, null);
+            }
+        }
+
         private static void SaveChest(Container container)
         {
             if (container != null && SaveMethod != null)
@@ -426,7 +449,7 @@ namespace BuildFromChest
 
         private static int Take(Inventory inventory, string sharedName, int amount)
         {
-            if (inventory == null || amount <= 0)
+            if (inventory == null || amount <= 0 || string.IsNullOrEmpty(sharedName))
             {
                 return 0;
             }
@@ -438,7 +461,7 @@ namespace BuildFromChest
 
         private static int Give(Inventory inventory, string prefabName, string sharedName, int amount)
         {
-            if (inventory == null || amount <= 0)
+            if (inventory == null || amount <= 0 || string.IsNullOrEmpty(prefabName) || string.IsNullOrEmpty(sharedName))
             {
                 return 0;
             }
@@ -446,6 +469,20 @@ namespace BuildFromChest
             int before = inventory.CountItems(sharedName, -1, true);
             inventory.AddItem(prefabName, amount, 1, 0, 0L, "", false, false);
             return inventory.CountItems(sharedName, -1, true) - before;
+        }
+
+        private sealed class HeldTake
+        {
+            public Container Chest;
+            public readonly List<MovedStack> Items = new List<MovedStack>();
+        }
+
+        private sealed class MovedStack
+        {
+            public string SharedName;
+            public string PrefabName;
+            public int TakenFromChest;
+            public int GivenToPlayer;
         }
     }
 

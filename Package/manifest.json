@@ -1,8 +1,8 @@
 {
   "name": "FrizzQOL_Build_From_Chest",
-  "version_number": "0.1.0",
+  "version_number": "0.2.0",
   "website_url": "https://github.com/frizzlebeard/FrizzQOL.BuildFromChest",
-  "description": "Hammer placement pulls missing wood and stone from the nearest chest you own.",
+  "description": "Hammer placement pulls missing building materials from nearby chests you can open.",
   "dependencies": [
     "denikson-BepInExPack_Valheim-5.4.2333"
   ]

@@ -9,7 +9,7 @@ namespace BuildFromChest
     {
         public const string PluginGuid = "com.frizzqol.buildfromchest";
         public const string PluginName = "FrizzQOL Build From Chest";
-        public const string PluginVersion = "0.1.0";
+        public const string PluginVersion = "0.2.0";
 
         internal static Plugin Instance { get; private set; }
 
